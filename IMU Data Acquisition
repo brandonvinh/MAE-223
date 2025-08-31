@@ -1,3 +1,4 @@
+%%This code takes raw csv data from the ocean sensor and converts it into readable data, including filtered plots and GPS position plots for the IMU and GPS, written in MATLAB
 %% Define the path to your CSV file
 
 filePath2 = 'OceanWaves.csv'; %X is the first column and so on
