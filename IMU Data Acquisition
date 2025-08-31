@@ -1,0 +1,301 @@
+%% Define the path to your CSV file
+
+filePath2 = 'OceanWaves.csv'; %X is the first column and so on
+
+
+
+%filePath1 = 'Accelerometer8.csv';
+%filePath2 = 'DatalogAccel8.csv'; %X is the first column and so on
+%filePath3 = 'Gyroscope8.csv';
+%filePath4 = 'DatalogGyro8.csv';
+%filePath5 = 'Magnetometer8.csv';
+%filePath6 = 'DatalogMag8.csv';
+
+format long g;
+
+% Read the CSV file into a table
+
+Accelerometerdatalog = readtable(filePath2);
+ 
+shift = 0; 
+% Segment Selection (from 44.5 to 95 seconds)
+timeRange = [1524 2453];
+
+indexInRange = find(Accelerometerdatalog.Time/1000 > 1524 & Accelerometerdatalog.Time/1000 < 1525);
+
+indexInRangeend = find(Accelerometerdatalog.Time/1000 > 2453 & Accelerometerdatalog.Time/1000 < 2454);
+%% Data log on after segmentation & alignment - NO filter
+
+% Arduino Data SegmentS
+arduinoAccelIdx = (Accelerometerdatalog.Time/1000-shift >= timeRange(1)) & (Accelerometerdatalog.Time/1000-shift <= timeRange(2));
+arduinoAccelTimeSegment = Accelerometerdatalog.Time(arduinoAccelIdx)/1000-shift;
+
+%Adjust y scale shifts here
+arduinoAccXSegment = Accelerometerdatalog.AccX(arduinoAccelIdx)/1000*9.81;
+arduinoAccYSegment = Accelerometerdatalog.AccY(arduinoAccelIdx)/1000*9.81;
+arduinoAccZSegment = Accelerometerdatalog.AccZ(arduinoAccelIdx)/1000*9.81;
+
+arduinoGyroIdx = (Accelerometerdatalog.Time/1000 -shift>= timeRange(1)) & (Accelerometerdatalog.Time/1000 - shift <= timeRange(2));
+arduinoGyroTimeSegment = Accelerometerdatalog.Time(arduinoGyroIdx)/1000-shift;
+
+arduinoGyroXSegment = Accelerometerdatalog.GyroX(arduinoGyroIdx);
+arduinoGyroYSegment = Accelerometerdatalog.GyroY(arduinoGyroIdx);
+arduinoGyroZSegment = Accelerometerdatalog.GyroZ(arduinoGyroIdx);
+
+arduinoMagIdx = (Accelerometerdatalog.Time/1000 -shift>= timeRange(1)) & (Accelerometerdatalog.Time/1000 - shift<= timeRange(2));
+arduinoMagTimeSegment = Accelerometerdatalog.Time(arduinoMagIdx)/1000-shift;
+
+arduinoMagXSegment = Accelerometerdatalog.MagX(arduinoMagIdx);
+arduinoMagYSegment = Accelerometerdatalog.MagY(arduinoMagIdx);
+arduinoMagZSegment = Accelerometerdatalog.MagZ(arduinoMagIdx);
+
+figure(1);
+plot( arduinoAccelTimeSegment,arduinoAccXSegment);
+hold on;
+plot(arduinoAccelTimeSegment, arduinoAccYSegment);
+hold on;
+plot(arduinoAccelTimeSegment , arduinoAccZSegment);
+hold off;
+legend('x','y','z');
+title("Accelerometer Arduino Unfiltered raw cut");
+xlabel("Time (s)");
+ylabel('Accelerometer (m/s^2)');
+hold off;
+legend('x','y','z');
+
+
+
+figure(2);
+plot(arduinoMagTimeSegment, arduinoMagXSegment);
+hold on;
+plot(arduinoMagTimeSegment, arduinoMagYSegment);
+hold on;
+plot(arduinoMagTimeSegment, arduinoMagZSegment);
+hold off;
+legend('x','y','z');
+title("Magnetometer Arduino Unfiltered");
+xlabel("Time (s)");
+ylabel('Magnetometer');
+
+figure(3);
+plot(arduinoGyroTimeSegment, arduinoGyroXSegment);
+hold on;
+plot(arduinoGyroTimeSegment, arduinoGyroYSegment);
+hold on;
+plot(arduinoGyroTimeSegment, arduinoGyroZSegment);
+hold off;
+legend('x','y','z');
+title("Gyrosscope Arduino Unfiltered");
+xlabel("Time (s)");
+ylabel('Gyroscope');
+
+
+
+
+%% Comparing Arduino and phone plots 
+% 
+% Ensure common time base
+fs1 =3.2333;  % Example sampling rate in Hz (set based on your data)
+f_lo_accel = 0.1; 
+f_hi_accel = 1.6;
+[b_accel, a_accel] = butter(4, [f_lo_accel, f_hi_accel] / (fs1 / 2), 'bandpass');
+
+% Filter Arduino Data
+
+arduinoAccXSegment = filtfilt(b_accel, a_accel,  arduinoAccXSegment);
+arduinoAccYSegment = filtfilt(b_accel, a_accel,  arduinoAccYSegment);
+
+
+% Filter Arduino Data
+%arduinoAccXSegment = filtfilt(b_accel, a_accel,  arduinoAccXSegment);
+%arduinoAccYSegment = filtfilt(b_accel, a_accel,  arduinoAccYSegment);
+
+ % Example sampling rate in Hz (set based on your data) ERROR COULD BE FROM SAMPLE RATE BEING TOO LOW FOR RANGE
+f_lo_accel = 0.1; 
+f_hi_accel = 1.6;
+[b_accel, a_accel] = butter(4, [f_lo_accel, f_hi_accel] / (fs1 / 2), 'bandpass');
+arduinoAccZSegment = filtfilt(b_accel, a_accel, arduinoAccZSegment);
+
+figure(11)
+plot(arduinoAccelTimeSegment, arduinoAccXSegment);
+hold on 
+plot(arduinoAccelTimeSegment, arduinoAccYSegment);
+hold on
+plot(arduinoAccelTimeSegment, arduinoAccZSegment);
+legend('x','y','z');
+title("Accelerometer Filtered");
+xlabel("Time (s)");
+ylabel('Accelerometer (m/s^2)');
+%arduinoAccXSegment = 10*arduinoAccXSegment
+
+%arduinoAccYSegment=15*arduinoAccYSegment
+
+%arduinoAccZSegment=0.9*arduinoAccZSegment
+
+%% Integration to position
+
+arduinoVelXSegment = cumtrapz(arduinoAccelTimeSegment, arduinoAccXSegment);
+arduinoVelYSegment = cumtrapz(arduinoAccelTimeSegment,  arduinoAccYSegment);
+arduinoVelZSegment = cumtrapz(arduinoAccelTimeSegment, arduinoAccZSegment);
+
+arduinoVelXSegment = detrend(arduinoVelXSegment);
+arduinoVelYSegment = detrend(arduinoVelYSegment);
+arduinoVelZSegment = detrend(arduinoVelZSegment);
+
+arduinoPosXSegment = cumtrapz(arduinoAccelTimeSegment, arduinoVelXSegment);
+arduinoPosYSegment = cumtrapz(arduinoAccelTimeSegment, arduinoVelYSegment);
+arduinoPosZSegment = cumtrapz(arduinoAccelTimeSegment, arduinoVelZSegment);
+
+%Phone
+
+%mobileVelXSegment = cumtrapz(mobileTimeSegment, mobileAccXSegment);
+%mobileVelYSegment = cumtrapz(mobileTimeSegment, mobileAccYSegment);
+%mobileVelZSegment = cumtrapz(mobileTimeSegment, mobileAccZSegment);
+
+%mobileVelXSegment = detrend(mobileVelXSegment);
+%mobileVelYSegment = detrend(mobileVelYSegment);
+%mobileVelZSegment = detrend(mobileVelZSegment);
+
+%mobilePosXSegment = cumtrapz(mobileTimeSegment, mobileVelXSegment);
+%mobilePosYSegment = cumtrapz(mobileTimeSegment, mobileVelYSegment);
+%mobilePosZSegment = cumtrapz(mobileTimeSegment, mobileVelZSegment);
+
+arduinoPosXSegment = (detrend(arduinoPosXSegment));
+arduinoPosYSegment = (detrend(arduinoPosYSegment));
+arduinoPosZSegment = (detrend(arduinoPosZSegment));
+
+%mobilePosXSegment = detrend(mobilePosXSegment);
+%mobilePosYSegment = detrend(mobilePosYSegment);
+%mobilePosZSegment = detrend(mobilePosZSegment);
+
+figure(13);
+plot(arduinoAccelTimeSegment, arduinoVelXSegment);
+hold on;
+plot(arduinoAccelTimeSegment, arduinoVelYSegment);
+hold on
+plot(arduinoAccelTimeSegment, arduinoVelZSegment);
+hold off;
+legend('X','Y','Z');
+title("Velocity Filtered");
+xlabel("Time (s)");
+ylabel('Velocity (m/s)');
+
+
+figure(16);
+plot(arduinoAccelTimeSegment, arduinoPosXSegment);
+hold on;
+plot(arduinoAccelTimeSegment, arduinoPosYSegment);
+hold on
+plot(arduinoAccelTimeSegment, arduinoPosZSegment);
+hold off;
+legend('X','Y','Z');
+title("Position Filtered");
+xlabel("Time (s)");
+ylabel('Position (m)');
+
+
+
+%% Filtered Gyro & Mag
+%Gyro
+% Ensure common time base
+ % Example sampling rate in Hz (set based on your data)
+f_lo_accel = 0.1; 
+f_hi_accel = 0.3;
+[b_accel, a_accel] = butter(4, [f_lo_accel, f_hi_accel] / (fs1 / 2), 'bandpass');
+
+% Filter Arduino Data
+arduinoGyroXSegment = filtfilt(b_accel, a_accel,  arduinoGyroXSegment);
+arduinoGyroYSegment = filtfilt(b_accel, a_accel,  arduinoGyroYSegment);
+arduinoGyroZSegment = filtfilt(b_accel, a_accel, arduinoGyroZSegment);
+
+
+
+figure(19);
+plot(arduinoGyroTimeSegment, arduinoGyroXSegment);
+hold on;
+plot(arduinoGyroTimeSegment, arduinoGyroYSegment);
+hold on;
+plot(arduinoGyroTimeSegment, arduinoGyroZSegment);
+hold off;
+legend('x','y','z');
+title("Gyrosscope Arduino Filtered");
+xlabel("Time (ms)");
+ylabel('Gyroscope');
+
+
+
+
+% Ensure common time base
+ % Example sampling rate in Hz (set based on your data)
+f_lo_accel = 0.1; 
+f_hi_accel = 1.6;
+[b_accel, a_accel] = butter(4, [f_lo_accel, f_hi_accel] / (fs1 / 2), 'bandpass');
+
+% Filter Arduino Data
+arduinoMagXSegment = filtfilt(b_accel, a_accel,  arduinoMagXSegment);
+arduinoMagYSegment = filtfilt(b_accel, a_accel,  arduinoMagYSegment);
+arduinoMagZSegment = filtfilt(b_accel, a_accel,  arduinoMagZSegment);
+
+
+figure(21);
+plot(arduinoMagTimeSegment, arduinoMagXSegment);
+hold on;
+plot(arduinoMagTimeSegment, arduinoMagYSegment);
+hold on;
+plot(arduinoMagTimeSegment, arduinoMagZSegment);
+hold off;
+legend('x','y','z');
+title("Magnetometer Arduino Filtered");
+xlabel("Time (ms)");
+ylabel('Magnetometer');
+
+
+
+%plot(arduinoMagTimeSegment, 1.7*arduinoMagXSegment);
+
+%title("Magnetometer X Filtered");
+%xlabel("Time (ms)");
+%ylabel('Magnetometer');
+%legend('arduino','phone');
+
+%plot(arduinoMagTimeSegment, -2*arduinoMagYSegment);
+
+%title("Magnetometer Y Filtered");
+%xlabel("Time (ms)");
+%ylabel('Magnetometer');
+%legend('arduino','phone');
+
+%plot(arduinoMagTimeSegment,arduinoMagZSegment);
+
+%title("Magnetometer Z Filtered");
+%xlabel("Time (ms)");
+%ylabel('Magnetometer');
+%legend('arduino','phone');
+%% Plotting GPS
+
+
+chunk = 150;
+data = Accelerometerdatalog; % Loading IMU and GPS Data
+% data.time_s = data.time_s/1000; % James specific
+time = data.Time-data.Time(1); % adjusting to time first value
+%time = data.Time;
+format long g;
+
+lat_cat = data.latitude(1:chunk:end);
+lon_cat = data.longitude(1:chunk:end);
+time_cat = time(1:chunk:end);
+
+time_chunk = time(end)/length(time_cat); % s; how much time per chunk
+
+% Position Plot
+for i = 2:length(time_cat)-1
+    geoplot(lat_cat(i:i+1),lon_cat(i:i+1),'--rx', ...
+        'MarkerEdgeColor','b', ...
+        'MarkerSize',2)
+    hold on
+    % geolimits([32.8806, 32.8816],[-117.2336,-117.233]) % EBU II
+    %geolimits([32.8793,32.88],[-117.2322,-117.23083]) % Warren Field
+    title(['t = ' num2str(time_cat(i)) 's'])
+    drawnow
+end
+
