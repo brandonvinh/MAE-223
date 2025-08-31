@@ -1,0 +1,48 @@
+%This code creates a moving GPS gif to showcase position change over time
+function createGPSGif(data, indexInRange, indexInRangeend, outputFileName)
+    % createGPSGif - Plots GPS data over time and saves as an animated GIF
+    %
+    % Usage:
+    %   createGPSGif(Accelerometerdatalog, indexInRange, 'gps_path.gif')
+
+    chunk = 10;
+    time = data.Time;
+    
+    % Subsample latitude, longitude, and time
+    lat_cat = data.latitude(indexInRange(1):chunk:indexInRangeend(1));
+    lon_cat = data.longitude(indexInRange(1):chunk:indexInRangeend(1));
+    time_cat = time(indexInRange(1):chunk:indexInRangeend(1));
+
+    % Calculate time per chunk (not directly used here, but useful to know)
+    time_chunk = time(end) / length(time_cat);  % seconds
+
+    % Create figure
+    figure;
+    filename = outputFileName;  % e.g., 'gps_path.gif'
+
+    for i = 2:length(time_cat)-1
+        geoplot(lat_cat(i:i+1), lon_cat(i:i+1), '--rx', ...
+            'MarkerEdgeColor', 'b', ...
+            'MarkerSize', 2);
+        hold on;
+
+        % Optional: Limit view to specific map area
+        % geolimits([32.8806, 32.8816],[-117.2336,-117.2330]);  % Example
+        
+        title(['t = ' num2str(time_cat(i), '%.2f') ' s']);
+        drawnow;
+
+        % Capture the plot as a frame
+        frame = getframe(gcf);
+        im = frame2im(frame);
+        [imind, cm] = rgb2ind(im, 256);
+
+        if i == 2
+            imwrite(imind, cm, filename, 'gif', 'Loopcount', inf, 'DelayTime', 0.1);
+        else
+            imwrite(imind, cm, filename, 'gif', 'WriteMode', 'append', 'DelayTime', 0.1);
+        end
+    end
+
+    disp(['GIF saved as: ' filename]);
+end
