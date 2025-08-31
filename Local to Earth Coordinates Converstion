@@ -1,0 +1,151 @@
+
+%This code converts GPS and Accelerometer, Gyroscope, Magnetometer Data
+%from local to Earth coordinates
+%% Define the path to your CSV file
+filePath1 = 'OceanWaves.csv'; %X is the last column and so on, this is also multiplied by 1000 to be in ms for time
+
+%format long g;
+
+% Read the CSV file into a table
+Data = readtable(filePath1);
+
+%Initialization
+
+M = [];
+T = [];
+
+% Define the reference ellipsoid
+wgs84 = wgs84Ellipsoid('meters');
+
+
+% Use the first point as the reference for ENU
+lat0 = Data.latitude(indexInRange(1));
+lon0 = Data.longitude(indexInRange(1));
+alt0 = Data.altitude(indexInRange(1));
+
+for i = indexInRange(1):indexInRangeend(1)
+    % Current geodetic coordinates
+    lat = Data.latitude(i);
+    lon = Data.longitude(i);
+    alt = Data.altitude(i);
+
+    % Convert GPS to ENU coordinates (relative to first point)
+    [xEast, yNorth, zUp] = geodetic2enu(lat, lon, alt, lat0, lon0, alt0, wgs84);
+
+    % Roll and pitch in radians
+    %roll = atan2(Data.ay(i), Data.az(i));
+    %pitch = atan2(-Data.ax(i), sqrt(Data.ay(i)^2 + Data.az(i)^2));
+
+%Compute heading using tilt-compensated formulas
+% Xheading = x * cos(pitch) + y * sin(roll) * sin(pitch) + z * cos(roll) * sin(pitch);
+% Yheading = y * cos(roll) - z * sin(pitch);
+% Heading = 180 + 57.3 * atan2(Yheading, Xheading) + declination_shenzhen;
+
+    roll = Data.Roll(i);
+   pitch = Data.Pitch(i);
+   yaw = Data.heading(i);  % Heading = yaw in radians 
+
+    % Create DCM (ZYX convention) from Euler angles (in radians)
+    dcm = angle2dcm(yaw, pitch, roll, 'ZYX');
+
+    % Rotate body-frame sensors to Earth frame
+    accel_body = [Data.AccX(i); Data.AccY(i);Data.AccZ(i)];
+    accel_earth = (dcm * accel_body)';
+
+    gyro_body = [Data.GyroX(i); Data.GyroY(i); Data.GyroZ(i)];
+    gyro_earth = (dcm * gyro_body)';
+
+    mag_body = [Data.MagX(i); Data.MagY(i); Data.MagZ(i)];
+    mag_earth = (dcm * mag_body)';
+
+    % Store ENU and rotated sensor Data
+    M = [M ; accel_earth, gyro_earth, mag_earth, xEast, yNorth, zUp];
+end
+M = [Data.Time(indexInRange(1):indexInRangeend(1)) M];
+% Create output table
+T = array2table(M, 'VariableNames', {'Time' ,'Ax', 'Ay', 'Az', 'Gx','Gy','Gz','Mx','My','Mz','East','North','Up'});
+
+% Write to CSV
+writetable(T, 'Data_with_headers.csv', 'WriteVariableNames', true);
+
+
+figure(1)
+plot(diff(T.East))
+xlabel('Time (s)')
+ylabel('Distance (m)')
+title("X Direction");
+
+
+figure(2)
+plot(diff(T.North))
+xlabel('Time (s)')
+ylabel('Distance (m)')
+title("Y Direction");
+
+
+figure(3)
+plot(diff(T.Up))
+xlabel('Time (s)')
+ylabel('Velocity (m/s)')
+title("Z Direction");
+
+%% This uses ECEF coordinates
+
+%This code converts GPS and Accelerometer, Gyroscope, Magnetometer Data
+%from local to Earth coordinates
+%% Define the path to your CSV file
+%filePath1 = 'Data2.csv'; %X is the last column and so on, this is also multiplied by 1000 to be in ms for time
+
+%format long g;
+
+% Read the CSV file into a table
+%Data = readtable(filePath1);
+
+%Initialization
+
+%M = [];
+
+
+%for i = 1:height(Data)
+% Define buoy geodetic coordinates as [latitude, longitude, altitude]
+% Latitude and longitude in degrees, altitude in meters
+%lla = [Data.lat(i), Data.lon(i), Data.altitude(i)]
+
+% Convert GPS to ECEF coordinates (meters)
+%ecef = lla2ecef(lla,'WGS84');
+
+% Display results
+%fprintf('ECEF Coordinates (X, Y, Z) in meters:\n');
+%disp(ecef);
+
+%roll = atan2(Data.ay(i), Data.az(i))*180/pi;
+%pitch = atan2(-Data.ax(i), sqrt(Data.ay(i).^2 + Data.az(i).^2))*180/pi;
+
+%Radians of Euler Angle
+%yaw = Data.heading(i);    % rotation about Z axis can be considered heading
+%pitch =Data.Pitch(i);  % rotation about Y axis
+%roll = Data.Roll(i);   % rotation about X axis
+
+% Create DCM (ZYX convention)
+%dcm = angle2dcm(yaw, pitch, roll, 'ZYX');
+
+% Example accelerometer Data in body frame (3x1 vector)
+%accel_body = [Data.ax(i); Data.ay(i); Data.az(i)];
+
+% dcm is a 3x3 rotation matrix from body to Earth frame
+%accel_earth = (dcm * accel_body)';
+%
+% Similarly for gyro and magnetometer
+%gyro_body = [Data.gx(i); Data.gy(i); Data.gz(i)];
+%gyro_earth = (dcm * gyro_body)';
+
+%mag_body = [Data.mx(i); Data.my(i); Data.mz(i)];
+%mag_earth = (dcm * mag_body)';
+
+%M = [M ; accel_earth, gyro_earth, mag_earth ,ecef];
+
+%end
+
+%T= array2table(M, 'VariableNames', {'Ax', 'Ay', 'Az', 'Gx','Gy','Gz','Mx','My','Mz','X','Y','Z'});
+
+%writetable(T, 'Data_with_headers.csv', 'WriteVariableNames', true);
