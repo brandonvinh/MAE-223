@@ -1,0 +1,570 @@
+/* This code combines the IMU and IoT code to get IMU data and GPS data written to an SD card and/or internet cloud service
+*/
+/* from IMU */
+#include <AK09918.h>
+#include <ICM20600.h>
+#include <Wire.h>
+#include <SD.h>
+#include <math.h>
+#include <EEPROM.h>
+
+const int chipSelect = 10;  // Adjust to match your SD card CS pin
+
+AK09918_err_type_t err;
+int32_t x, y, z;
+AK09918 ak09918;
+ICM20600 icm20600(true);
+int16_t acc_x, acc_y, acc_z;
+int32_t offset_x, offset_y, offset_z;
+double roll, pitch;
+// Magnetic declination (for example, for Shenzhen)
+double declination_shenzhen = -2.2;
+
+/*From GPS*/
+#include "BotleticsSIM7000.h" // https://github.com/botletics/Botletics-SIM7000/tree/main/src
+#if defined(ARDUINO_SAMD_ZERO) && defined(SERIAL_PORT_USBVIRTUAL)
+  // Required for Serial on Zero based boards
+  #define Serial SERIAL_PORT_USBVIRTUAL
+#endif
+
+// Define *one* of the following lines:
+//#define SIMCOM_2G // SIM800/808/900/908, etc.
+//#define SIMCOM_3G // SIM5320
+#define SIMCOM_7000
+//#define SIMCOM_7070
+//#define SIMCOM_7500
+//#define SIMCOM_7600
+/************************* PIN DEFINITIONS *********************************/
+// For botletics SIM7000 shield
+#define PWRKEY 6
+#define RST 7
+//#define DTR 8 // Connect with solder jumper
+//#define RI 9 // Need to enable via AT commands
+#define TX 12 // Microcontroller RX
+#define RX 13 // Microcontroller TX
+//#define T_ALERT 12 // Connect with solder jumper
+
+// We default to using software serial. If you want to use hardware serial
+// (because softserial isnt supported) comment out the following three lines 
+// and uncomment the HardwareSerial line
+#include <SoftwareSerial.h>
+SoftwareSerial modemSS = SoftwareSerial(TX, RX);
+
+// Use the following line for ESP8266 instead of the line above (comment out the one above)
+//SoftwareSerial modemSS = SoftwareSerial(TX, RX, false, 256); // TX, RX, inverted logic, buffer size
+
+SoftwareSerial *modemSerial = &modemSS;
+
+// Hardware serial is also possible!
+//HardwareSerial *modemSerial = &Serial1;
+
+// For ESP32 hardware serial use these lines instead
+//#include <HardwareSerial.h>
+//HardwareSerial modemSS(1);
+Botletics_modem_LTE modem = Botletics_modem_LTE();
+/****************************** OTHER STUFF ***************************************/
+// The following line is used for applications that require repeated data posting, like GPS trackers
+// Comment it out if you only want it to post once, not repeatedly every so often
+#define samplingRate 10 // The time in between posts, in seconds
+
+// The following line can be used to turn off the shield after posting data. This
+// could be useful for saving energy for sparse readings but keep in mind that it
+// will take longer to get a fix on location after turning back on than if it had
+// already been on. Comment out to leave the shield on after it posts data.
+//#define turnOffShield // Turn off shield after posting data
+
+uint8_t readline(char *buff, uint8_t maxbuff, uint16_t timeout = 0);
+char imei[16] = {0}; // Use this for device ID
+uint8_t type;
+uint16_t battLevel = 0; // Battery level (percentage)
+float latitude, longitude, speed_kph, heading, altitude, second;
+uint16_t year;
+uint8_t month, day, hour, minute;
+uint8_t counter = 0;
+//char PIN[5] = "1234"; // SIM card PIN
+
+char URL[200];  // Make sure this is long enough for your request URL
+char body[100]; // Make sure this is long enough for POST body
+char latBuff[12], longBuff[12], locBuff[50], speedBuff[12],
+     headBuff[12], altBuff[12], tempBuff[12], battBuff[12];
+
+
+// EEPROM addresses for storing calibration data
+const int EEPROM_SIGNATURE_ADDR = 0;       // 1 byte for signature
+const int EEPROM_OFFSET_X_ADDR = 1;        // 4 bytes
+const int EEPROM_OFFSET_Y_ADDR = 5;        // 4 bytes
+const int EEPROM_OFFSET_Z_ADDR = 9;        // 4 bytes
+
+const byte EEPROM_SIGNATURE = 0xA5;        // Arbitrary signature to mark valid data
+
+// Set to true to force calibration on startup, false to load saved offsets
+const bool forceCalibration = false;
+
+// Function declarations
+bool loadOffsetsFromEEPROM(int32_t* offset_x, int32_t* offset_y, int32_t* offset_z);
+void saveOffsetsToEEPROM(int32_t offset_x, int32_t offset_y, int32_t offset_z);
+void calibrate(uint32_t timeout, int32_t* offsetx, int32_t* offsety, int32_t* offsetz);
+
+
+void setup() {
+
+/* From IMU*/
+
+Wire.begin();
+Serial.begin(9600);
+  while (!Serial){
+    ;
+  }
+ Serial.println("Initializing SD Card.....");
+  // Initialize SD card and create the data file (if it doesn't exist)
+  if (!SD.begin(chipSelect)) {
+    Serial.println("SD card initialization failed!");
+    // Optionally, halt further execution if SD is required:
+    // while (true);
+  } else {
+    Serial.println("SD card is ready.");
+  }
+
+  // Check if the file already exists; if not, create it and write a header
+  if (SD.exists("datalog.csv")) {
+  SD.remove("datalog.csv");           // delete any old file
+}
+
+// Now always create a brand‑new one:
+File dataFile = SD.open("datalog.csv", FILE_WRITE);
+if (dataFile) {
+  /*added GPS data to Datalog file*/
+  dataFile.println("Time,AccX,AccY,AccZ,GyroX,GyroY,GyroZ,MagX,MagY,MagZ,Roll,Pitch,heading, latitude, longitude, speed_kph, altitude, year, month, day, hour, minute, second");
+  dataFile.close();
+  Serial.println("Data file (datalog.csv) created with header.");
+} else {
+  Serial.println("Error creating datalog.csv file!");
+  }
+
+  // Sensor initialization routines:
+  err = ak09918.initialize();
+  icm20600.initialize();
+  ak09918.switchMode(AK09918_POWER_DOWN);
+  ak09918.switchMode(AK09918_CONTINUOUS_100HZ);
+
+  // Wait for the sensor to be ready
+  err = ak09918.isDataReady();
+  while (err != AK09918_ERR_OK) {
+    Serial.println("Waiting Sensor");
+    delay(100);
+    err = ak09918.isDataReady();
+  }
+
+ // Decide whether to force calibration or load from EEPROM
+  if (!forceCalibration && loadOffsetsFromEEPROM(&offset_x, &offset_y, &offset_z)) {
+    Serial.println("Offsets loaded from EEPROM:");
+    Serial.print("Offset X: "); Serial.println(offset_x);
+    Serial.print("Offset Y: "); Serial.println(offset_y);
+    Serial.print("Offset Z: "); Serial.println(offset_z);
+  } else {
+    Serial.println("Starting calibration...");
+    Serial.println("Start figure-8 calibration after 2 seconds.");
+    delay(2000);
+    calibrate(30000, &offset_x, &offset_y, &offset_z);
+    Serial.println("\nCalibration complete.");
+    Serial.print("Offset X: "); Serial.println(offset_x);
+    Serial.print("Offset Y: "); Serial.println(offset_y);
+    Serial.print("Offset Z: "); Serial.println(offset_z);
+
+    saveOffsetsToEEPROM(offset_x, offset_y, offset_z);
+  }
+
+  delay(10000);
+
+
+  /*From GPS*/
+  Serial.println(F("*** SIMCom Module IoT Example ***"));
+  
+  pinMode(RST, OUTPUT);
+  digitalWrite(RST, HIGH); // Default state
+
+  modem.powerOn(PWRKEY); // Power on the module
+  moduleSetup(); // Establishes first-time serial comm and prints IMEI
+
+  // Set modem to full functionality
+  modem.setFunctionality(1); // AT+CFUN=1
+  modem.setNetworkSettings(F("hologram")); // For Hologram SIM card
+
+  // Perform first-time GPS/GPRS setup if the shield is going to remain on,
+  // otherwise these won't be enabled in loop() and it won't work!
+#ifndef turnOffShield
+  // Enable GPS
+  while (!modem.enableGPS(true)) {
+    Serial.println(F("Failed to turn on GPS, retrying..."));
+    delay(2000); // Retry every 2s
+  }
+  Serial.println(F("Turned on GPS!"));
+
+#endif
+
+/* Internet stuff
+// Unlock SIM card if needed
+  // Remember to uncomment the "PIN" variable definition above
+  /*
+  if (!modem.unlockSIM(PIN)) {
+    Serial.println(F("Failed to unlock SIM card"));
+  }
+
+
+  // Set modem to full functionality
+  modem.setFunctionality(1); // AT+CFUN=1
+
+  // Configure a GPRS APN, username, and password.
+  // You might need to do this to access your network's GPRS/data
+  // network.  Contact your provider for the exact APN, username,
+  // and password values.  Username and password are optional and
+  // can be removed, but APN is required.
+  //modem.setNetworkSettings(F("your APN"), F("your username"), F("your password"));
+  //modem.setNetworkSettings(F("m2m.com.attz")); // For AT&T IoT SIM card
+  //modem.setNetworkSettings(F("telstra.internet")); // For Telstra (Australia) SIM card - CAT-M1 (Band 28)
+  modem.setNetworkSettings(F("hologram")); // For Hologram SIM card
+
+  // Optionally configure HTTP gets to follow redirects over SSL.
+  // Default is not to follow SSL redirects, however if you uncomment
+  // the following line then redirects over SSL will be followed.
+  //modem.setHTTPSRedirect(true);
+
+  // Other examples of some things you can set:
+  modem.setPreferredMode(38); // Use LTE only, not 2G
+  modem.setPreferredLTEMode(1); // Use LTE CAT-M only, not NB-IoT
+  modem.setOperatingBand("CAT-M", 12); // AT&T uses band 12
+//  modem.setOperatingBand("CAT-M", 13); // Verizon uses band 13
+  modem.enableRTC(true);
+  
+  modem.enableSleepMode(true);
+  modem.set_eDRX(1, 4, "0010");
+  modem.enablePSM(true);
+
+  // Set the network status LED blinking pattern while connected to a network (see AT+SLEDS command)
+  modem.setNetLED(true, 2, 64, 3000); // on/off, mode, timer_on, timer_off
+  modem.setNetLED(false); // Disable network status LED
+  */
+
+
+}
+
+void moduleSetup() {
+  // SIM7000 takes about 3s to turn on and SIM7500 takes about 15s
+  // Press Arduino reset button if the module is still turning on and the board doesn't find it.
+  // When the module is on it should communicate right after pressing reset
+
+  // Software serial:
+  modemSS.begin(115200); // Default SIM7000 shield baud rate
+
+  Serial.println(F("Configuring to 9600 baud"));
+  modemSS.println("AT+IPR=9600"); // Set baud rate
+  delay(100); // Short pause to let the command run
+  modemSS.begin(9600);
+  if (! modem.begin(modemSS)) {
+    Serial.println(F("Couldn't find modem"));
+    while (1); // Don't proceed if it couldn't find the device
+  }
+  
+  type = modem.type();
+  Serial.println(F("Modem is OK"));
+  Serial.print(F("Found "));
+  switch (type) {
+    case SIM800L:
+      Serial.println(F("SIM800L")); break;
+    case SIM800H:
+      Serial.println(F("SIM800H")); break;
+    case SIM808_V1:
+      Serial.println(F("SIM808 (v1)")); break;
+    case SIM808_V2:
+      Serial.println(F("SIM808 (v2)")); break;
+    case SIM5320A:
+      Serial.println(F("SIM5320A (American)")); break;
+    case SIM5320E:
+      Serial.println(F("SIM5320E (European)")); break;
+    case SIM7000:
+      Serial.println(F("SIM7000")); break;
+    case SIM7070:
+      Serial.println(F("SIM7070")); break;
+    case SIM7500:
+      Serial.println(F("SIM7500")); break;
+    case SIM7600:
+      Serial.println(F("SIM7600")); break;
+    default:
+      Serial.println(F("???")); break;
+  }
+  
+  // Print module IMEI number.
+  uint8_t imeiLen = modem.getIMEI(imei);
+  if (imeiLen > 0) {
+    Serial.print("Module IMEI: "); Serial.println(imei);
+  }
+}
+
+void calibrate(uint32_t timeout, int32_t* offsetx, int32_t* offsety, int32_t* offsetz) {
+  int32_t value_x_min, value_x_max, value_y_min, value_y_max, value_z_min, value_z_max;
+  uint32_t timeStart = millis();
+
+  // Initialize min/max with the first sample.
+  ak09918.getData(&x, &y, &z);
+  value_x_min = value_x_max = x;
+  value_y_min = value_y_max = y;
+  value_z_min = value_z_max = z;
+  delay(100);
+
+  while ((millis() - timeStart) < timeout) {
+    ak09918.getData(&x, &y, &z);
+    if (x < value_x_min) value_x_min = x;
+    if (x > value_x_max) value_x_max = x;
+    if (y < value_y_min) value_y_min = y;
+    if (y > value_y_max) value_y_max = y;
+    if (z < value_z_min) value_z_min = z;
+    if (z > value_z_max) value_z_max = z;
+    Serial.print(".");
+    delay(1000);
+  }
+
+  // Set offsets as the midpoint of the detected extremes
+  *offsetx = value_x_min + (value_x_max - value_x_min) / 2;
+  *offsety = value_y_min + (value_y_max - value_y_min) / 2;
+  *offsetz = value_z_min + (value_z_max - value_z_min) / 2;
+}
+
+
+void loop() {
+
+  /*From IMU*/
+  // Read acceleration data
+  acc_x = icm20600.getAccelerationX();
+  acc_y = icm20600.getAccelerationY();
+  acc_z = icm20600.getAccelerationZ();
+
+  // Read gyroscope data
+  int16_t gyroX = icm20600.getGyroscopeX();
+  int16_t gyroY = icm20600.getGyroscopeY();
+  int16_t gyroZ = icm20600.getGyroscopeZ();
+
+  // Read magnetometer data and apply calibration offsets
+  ak09918.getData(&x, &y, &z);
+  x = x - offset_x;
+  y = y - offset_y;
+  z = z - offset_z;
+
+  // Compute roll and pitch (in radians), then convert to degrees
+  roll = atan2((float)acc_y, (float)acc_z);
+  pitch = atan2(-(float)acc_x, sqrt((float)acc_y * acc_y + (float)acc_z * acc_z));
+
+  // Compute heading using tilt-compensated formulas
+  double Xheading = x * cos(pitch) + y * sin(roll) * sin(pitch) + z * cos(roll) * sin(pitch);
+  double Yheading = y * cos(roll) - z * sin(pitch);
+  float Heading = 180 + 57.3 * atan2(Yheading, Xheading) + declination_shenzhen;
+/*
+  // Optionally, print sensor values to Serial Monitor
+  Serial.print("A: ");
+  Serial.print(acc_x); Serial.print(", ");
+  Serial.print(acc_y); Serial.print(", ");
+  Serial.print(acc_z); Serial.println(" mg");
+
+  Serial.print("G: ");
+  Serial.print(gyroX); Serial.print(", ");
+  Serial.print(gyroY); Serial.print(", ");
+  Serial.print(gyroZ); Serial.println(" dps");
+
+  Serial.print("M: ");
+  Serial.print(x); Serial.print(", ");
+  Serial.print(y); Serial.print(", ");
+  Serial.print(z); Serial.println(" uT");
+
+  Serial.print("Roll: "); Serial.println(roll * 57.3);
+  Serial.print("Pitch: "); Serial.println(pitch * 57.3);
+  Serial.print("Heading: "); Serial.println(heading);
+  Serial.println("--------------------------------");
+*/
+  // Open file for appending and log sensor data (CSV format)
+File dataFile = SD.open("datalog.csv", FILE_WRITE);
+if (dataFile) {
+  dataFile.print(millis()); // Time
+  dataFile.print(",");
+  dataFile.print(acc_x); // AccX
+  dataFile.print(",");
+  dataFile.print(acc_y); // AccY
+  dataFile.print(",");
+  dataFile.print(acc_z); // AccZ
+  dataFile.print(",");
+  dataFile.print(gyroX); // GyroX
+  dataFile.print(",");
+  dataFile.print(gyroY); // GyroY
+  dataFile.print(",");
+  dataFile.print(gyroZ); // GyroZ
+  dataFile.print(",");
+  dataFile.print(x); // MagX
+  dataFile.print(",");
+  dataFile.print(y); // MagY
+  dataFile.print(",");
+  dataFile.print(z); // MagZ
+  dataFile.print(",");
+  dataFile.print(roll * 57.3); // Roll
+  dataFile.print(",");
+  dataFile.print(pitch * 57.3); // Pitch
+  dataFile.print(",");
+  dataFile.print(heading); // IMU Heading (or GPS Heading if you want)
+  dataFile.print(",");
+  dataFile.print(latitude,8); // Latitude
+  dataFile.print(",");
+  dataFile.print(longitude,8); // Longitude
+  dataFile.print(",");
+  dataFile.print(speed_kph); // Speed kph
+  dataFile.print(",");
+  dataFile.print(altitude); // Altitude
+  dataFile.print(",");
+  dataFile.print(year); // Year
+  dataFile.print(",");
+  dataFile.print(month); // Month
+  dataFile.print(",");
+  dataFile.print(day); // Day
+  dataFile.print(",");
+  dataFile.print(hour); // Hour
+  dataFile.print(",");
+  dataFile.print(minute); // Minute
+  dataFile.print(",");
+  dataFile.print(second); // Second
+  dataFile.println();
+  dataFile.close();
+} else {
+  Serial.println("Error opening datalog.csv for data logging");
+}
+
+
+  // Get a fix on location, try every 2s
+  // Use the top line if you want to parse UTC time data as well, the line below it if you don't care
+//  while (!modem.getGPS(&latitude, &longitude, &speed_kph, &heading, &altitude, &year, &month, &day, &hour, &minute, &second)) {
+  while (!modem.getGPS(&latitude, &longitude, &speed_kph, &heading, &altitude, &year, &month, &day, &hour, &minute, &second)) {
+    Serial.println(F("Failed to get GPS location, retrying..."));
+    delay(100); // Retry every 2s
+  }
+  /*
+  Serial.println(F("Found 'eeeeem!"));
+  Serial.println(F("---------------------"));
+  Serial.print(F("Latitude: ")); Serial.println(latitude, 6);
+  Serial.print(F("Longitude: ")); Serial.println(longitude, 6);
+  Serial.print(F("Speed: ")); Serial.println(speed_kph);
+  Serial.print(F("Heading: ")); Serial.println(heading);
+  Serial.print(F("Altitude: ")); Serial.println(altitude);
+  
+  Serial.println(F("---------------------"));
+*/
+/*
+This for uploading to cloud
+  #ifdef PROTOCOL_HTTP_GET
+  // GET request
+  
+  counter = 0; // This counts the number of failed attempts tries
+  
+  #if defined(SIMCOM_3G) || defined(SIMCOM_7500) || defined(SIMCOM_7600)
+    // You can adjust the contents of the request if you don't need certain things like speed, altitude, etc.
+    sprintf(URL, "GET /dweet/for/%s?lat=%s&long=%s&speed=%s&head=%s&alt=%s&temp=%s&batt=%s HTTP/1.1\r\nHost: dweet.io\r\n\r\n",
+            imei, latBuff, longBuff, speedBuff, headBuff, altBuff, tempBuff, battBuff);
+            
+    // Try a total of three times if the post was unsuccessful (try additional 2 times)
+    while (counter < 3 && !modem.postData("www.dweet.io", 443, "HTTPS", URL)) { // Server, port, connection type, URL
+      Serial.println(F("Failed to complete HTTP/HTTPS request..."));
+      counter++; // Increment counter
+      delay(1000);
+    }
+  #else
+    sprintf(URL, "http://dweet.io/dweet/for/%s?lat=%s&long=%s&speed=%s&head=%s&alt=%s&temp=%s&batt=%s", imei, latBuff, longBuff,
+            speedBuff, headBuff, altBuff, tempBuff, battBuff);
+          
+    while (counter < 3 && !modem.postData("GET", URL)) {
+      Serial.println(F("Failed to post data, retrying..."));
+      counter++; // Increment counter
+      delay(1000);
+    }
+  #endif
+
+  bool netStatus() {
+  int n = modem.getNetworkStatus();
+  
+  Serial.print(F("Network status ")); Serial.print(n); Serial.print(F(": "));
+  if (n == 0) Serial.println(F("Not registered"));
+  if (n == 1) Serial.println(F("Registered (home)"));
+  if (n == 2) Serial.println(F("Not registered (searching)"));
+  if (n == 3) Serial.println(F("Denied"));
+  if (n == 4) Serial.println(F("Unknown"));
+  if (n == 5) Serial.println(F("Registered roaming"));
+
+  if (!(n == 1 || n == 5)) return false;
+  else return true;
+}
+
+// Read the module's power supply voltage
+float readVcc() {
+  // Read battery voltage
+  if (!modem.getBattVoltage(&battLevel)) Serial.println(F("Failed to read batt"));
+  else Serial.print(F("battery = ")); Serial.print(battLevel); Serial.println(F(" mV"));
+
+  // Read LiPo battery percentage
+//  if (!modem.getBattPercent(&battLevel)) Serial.println(F("Failed to read batt"));
+//  else Serial.print(F("BAT % = ")); Serial.print(battLevel); Serial.println(F("%"));
+
+  return battLevel;
+}
+
+
+ // Turn on GPRS
+  while (!modem.enableGPRS(true)) {
+    Serial.println(F("Failed to enable GPRS, retrying..."));
+    delay(2000); // Retry every 2s
+  }
+  Serial.println(F("Enabled GPRS!"));
+#endif
+
+
+// Post something like temperature and battery level to the web API
+  // Construct URL and post the data to the web API
+
+  // Format the floating point numbers
+  dtostrf(latitude, 1, 6, latBuff);
+  dtostrf(longitude, 1, 6, longBuff);
+  dtostrf(speed_kph, 1, 0, speedBuff);
+  dtostrf(heading, 1, 0, headBuff);
+  dtostrf(altitude, 1, 1, altBuff);
+  dtostrf(temperature, 1, 2, tempBuff); // float_val, min_width, digits_after_decimal, char_buffer
+  dtostrf(battLevel, 1, 0, battBuff);
+
+  // Also construct a combined, comma-separated location array
+  // (many platforms require this for dashboards, like Adafruit IO):
+  sprintf(locBuff, "%s,%s,%s,%s", speedBuff, latBuff, longBuff, altBuff); // This could look like "10,33.123456,-85.123456,120.5"
+  
+
+*/
+
+delay(50);
+}
+// Load offsets from EEPROM; returns true if valid data found
+bool loadOffsetsFromEEPROM(int32_t* offset_x, int32_t* offset_y, int32_t* offset_z) {
+  byte signature = EEPROM.read(EEPROM_SIGNATURE_ADDR);
+  if (signature != EEPROM_SIGNATURE) {
+    return false;  // No valid calibration data
+  }
+  EEPROM.get(EEPROM_OFFSET_X_ADDR, *offset_x);
+  EEPROM.get(EEPROM_OFFSET_Y_ADDR, *offset_y);
+  EEPROM.get(EEPROM_OFFSET_Z_ADDR, *offset_z);
+  return true;
+}
+
+// Save offsets to EEPROM and write signature byte
+void saveOffsetsToEEPROM(int32_t offset_x, int32_t offset_y, int32_t offset_z) {
+  EEPROM.write(EEPROM_SIGNATURE_ADDR, EEPROM_SIGNATURE);
+  EEPROM.put(EEPROM_OFFSET_X_ADDR, offset_x);
+  EEPROM.put(EEPROM_OFFSET_Y_ADDR, offset_y);
+  EEPROM.put(EEPROM_OFFSET_Z_ADDR, offset_z);
+  Serial.println("Offsets saved to EEPROM.");
+}
+
+
+
+
+
+
+
+
