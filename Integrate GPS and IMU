@@ -1,0 +1,71 @@
+% This code integrates GPS and IMU data to create location plot
+% Load your DATAENU
+filePath = 'DATA_with_headers.csv';
+DATAENU = readtable(filePath);
+
+% Time vectors
+imuTimestamps = DATAENU.Time / 1000;  % Convert ms to s
+gpsTimestamps = DATAENU.Time / 1000;
+
+% Extract sensor DATAENU
+accelDATAENU = [arduinoAccXSegment, arduinoAccYSegment, arduinoAccZSegment] ;        % Assuming in g → m/s²
+gyroDATAENU  = deg2rad([arduinoGyroXSegment, arduinoGyroYSegment,arduinoGyroZSegment])  ;    % Assuming in deg/s → rad/s
+magDATAENU   = [arduinoMagXSegment, arduinoMagYSegment, arduinoMagZSegment];               % In µT or raw
+
+% Extract ENU GPS DATAENU
+gpsDATAENU_ENU = [DATAENU.East, DATAENU.North, DATAENU.Up];        % Mx3
+
+% Initial LLA position (required by the filter!)
+initialLLA = [Data.latitude(2), Data.longitude(2), Data.altitude(2)];  % degrees, meters
+
+% Create filter
+fuse = insfilterMARG;
+fuse.IMUSampleRate = 4;                % Hz
+fuse.ReferenceLocation = initialLLA;   % MUST be in LLA for the filter to work
+
+% Covariances
+magCovariance = eye(3);                 % Optional: tune this
+positionCovariance = diag([1 1 1]);     % Optional: tune this
+
+% Preallocate outputs
+numIMUSamples = size(accelDATAENU, 1);
+position = zeros(numIMUSamples, 3);
+orientation = quaternion.zeros(numIMUSamples, 1);
+velocity = zeros(numIMUSamples, 3);
+
+% Fusion loop
+gpsIndex = 1;
+numGPS = size(gpsDATAENU_ENU, 1);
+
+for k = 1:numIMUSamples
+    try
+        % Predict IMU state
+        predict(fuse, accelDATAENU(k,:), gyroDATAENU(k,:));
+
+        % Fuse magnetometer
+        fusemag(fuse, magDATAENU(k,:), magCovariance);
+
+        % Fuse ENU GPS if timestamps align
+        if gpsIndex <= numGPS && abs(gpsTimestamps(gpsIndex) - imuTimestamps(k)) < 1/fuse.IMUSampleRate/2
+            fusegps(fuse, gpsDATAENU_ENU(gpsIndex,:), positionCovariance);
+            gpsIndex = gpsIndex + 1;
+        end
+
+        % Output pose and velocity
+        [position(k,:), orientation(k)] = pose(fuse);
+        velocity(k,:) = fuse.State(4:6);
+    catch err
+        fprintf("Fusion failed at index %d: %s\n", k, err.message);
+        break;
+    end
+end
+
+% Plot results
+figure;
+plot3(position(:,1), position(:,2), position(:,3), 'LineWidth', 2);  % ENU: X = East
+xlabel('East (m)');
+ylabel('North (m)');
+zlabel('Up (m)');
+title('IMU + GPS Fused Position (ENU)');
+grid on;
+axis equal;
