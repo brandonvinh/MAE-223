@@ -1,0 +1,35 @@
+% Load data from two CSV files
+data1 = readtable('Copy_of_CDIPdata');  % sampled at 100 Hz
+%data2 = readtable('Accelerometer6.csv');  % sampled at 500 Hz
+
+% Sampling frequencies
+fs1 = 3.23;   % Hz for data1
+%fs2 = 100;   % Hz for data2
+
+% Extract X-axis acceleration
+acc_x1 = arduinoAccZSegment;
+
+% --- FFT for data1 ---
+N1 = length(acc_x1);
+f1 = (0:N1-1) * (fs1 / N1);
+fft1 = abs(fft(acc_x1)) / N1;
+f1_half = f1(1:floor(N1/2));
+fft1_half = fft1(1:floor(N1/2));
+
+% --- FFT for data2 ---
+%N2 = length(acc_x2);
+%f2 = (0:N2-1) * (fs2 / N2);
+%fft2 = abs(fft(acc_x2)) / N2;
+%f2_half = f2(1:floor(N2/2));
+%fft2_half = fft2(1:floor(N2/2))/10;  % Scale down for comparison
+
+% --- Plot both FFTs ---
+figure;
+semilogx(f1_half, fft1_half, 'b');
+%hold on;
+%semilogx(f2_half, fft2_half, 'r');
+xlabel('Frequency (Hz)');
+ylabel('Magnitude');
+title('FFT Comparison (Filtered Z)');
+legend('Data1', 'Data2');
+grid on;
